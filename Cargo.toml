@@ -1,0 +1,15 @@
+[package]
+name = "hypr-plasmoid"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+hyprland = "0.4.0-beta.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+zbus = { version = "5.12", default-features = false, features = ["tokio"] }
+tokio = { version = "1", features = ["rt", "macros"] }
+
+[profile.release]
+lto = true
+strip = true
