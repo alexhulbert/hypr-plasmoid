@@ -5,15 +5,13 @@ use hyprland::{
     keyword::Keyword,
     shared::*,
 };
+use regex::Regex;
 use serde::Deserialize;
 use std::{
     collections::HashMap,
     env, fs,
     process::{Command, Stdio},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
 };
 use zbus::{Connection, proxy};
 
@@ -56,10 +54,13 @@ fn title_rule(title: &str) -> String {
     format!("title:^({title})$")
 }
 
-fn is_visible(title: &str) -> bool {
+fn find_matching_title(title_pattern: &str) -> Option<String> {
+    let re = Regex::new(&format!("^({title_pattern})$")).ok()?;
     Clients::get()
-        .ok()
-        .is_some_and(|c| c.iter().any(|w| w.title == title))
+        .ok()?
+        .iter()
+        .find(|w| re.is_match(&w.title))
+        .map(|w| w.title.clone())
 }
 
 fn set_focus_mode(show: bool) {
@@ -133,20 +134,20 @@ async fn find_sni(conn: &Connection, plasmoid: &str) -> Option<(String, String)>
     None
 }
 
-async fn wait_for_window(title: &str, timeout_ms: u64) -> bool {
+async fn wait_for_window(title_pattern: &str, timeout_ms: u64) -> Option<String> {
     let start = std::time::Instant::now();
     while start.elapsed().as_millis() < timeout_ms as u128 {
-        if is_visible(title) {
-            return true;
+        if let Some(title) = find_matching_title(title_pattern) {
+            return Some(title);
         }
         tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
     }
-    false
+    None
 }
 
-fn hide(title: &str) {
-    if is_visible(title) {
-        Dispatch::call(DispatchType::CloseWindow(WindowIdentifier::Title(title))).ok();
+fn hide(title_pattern: &str) {
+    if let Some(title) = find_matching_title(title_pattern) {
+        Dispatch::call(DispatchType::CloseWindow(WindowIdentifier::Title(&title))).ok();
     }
 }
 
@@ -155,9 +156,6 @@ fn hide_all(cfg: &Config, except: Option<&str>) {
         if Some(name.as_str()) != except {
             hide(&p.title);
         }
-    }
-    if except.is_none() {
-        set_focus_mode(false);
     }
 }
 
@@ -179,8 +177,8 @@ fn nudge_cursor() {
 async fn show(conn: &Connection, cfg: &Config, name: &str) -> zbus::Result<()> {
     let p = cfg.get(name).expect("unknown plasmoid");
 
-    if is_visible(&p.title) {
-        Dispatch::call(DispatchType::FocusWindow(WindowIdentifier::Title(&p.title))).ok();
+    if let Some(title) = find_matching_title(&p.title) {
+        Dispatch::call(DispatchType::FocusWindow(WindowIdentifier::Title(&title))).ok();
         hide_all(cfg, Some(name));
         return Ok(());
     }
@@ -201,15 +199,15 @@ async fn show(conn: &Connection, cfg: &Config, name: &str) -> zbus::Result<()> {
         spawn_plasmoid(p);
     }
 
-    if wait_for_window(&p.title, 500).await {
-        Dispatch::call(DispatchType::FocusWindow(WindowIdentifier::Title(&p.title))).ok();
+    if let Some(title) = wait_for_window(&p.title, 500).await {
+        Dispatch::call(DispatchType::FocusWindow(WindowIdentifier::Title(&title))).ok();
     }
     Ok(())
 }
 
 async fn toggle(conn: &Connection, cfg: &Config, name: &str) -> zbus::Result<()> {
     let p = cfg.get(name).expect("unknown plasmoid");
-    if is_visible(&p.title) {
+    if find_matching_title(&p.title).is_some() {
         hide(&p.title);
         set_focus_mode(false);
     } else {
@@ -233,8 +231,8 @@ async fn warm_up(cfg: &Config) {
         let rule = title_rule(&p.title);
         Keyword::set("windowrule", format!("move -10000 -10000,{rule}")).ok();
         spawn_plasmoid(p);
-        if wait_for_window(&p.title, 2000).await {
-            Dispatch::call(DispatchType::CloseWindow(WindowIdentifier::Title(&p.title))).ok();
+        if let Some(title) = wait_for_window(&p.title, 2000).await {
+            Dispatch::call(DispatchType::CloseWindow(WindowIdentifier::Title(&title))).ok();
         }
         Keyword::set("windowrule", format!("unset,{rule}")).ok();
     }
@@ -243,19 +241,22 @@ async fn warm_up(cfg: &Config) {
 async fn daemon(cfg: Arc<Config>) {
     warm_up(&cfg).await;
 
-    let titles: Vec<_> = cfg.values().map(|p| p.title.clone()).collect();
-    let active = Arc::new(AtomicBool::new(false));
+    let patterns: Vec<_> = cfg
+        .values()
+        .filter_map(|p| Regex::new(&format!("^({})$", p.title)).ok())
+        .collect();
     let mut listener = EventListener::new();
 
     let cfg2 = cfg.clone();
     listener.add_workspace_changed_handler(move |_| hide_all(&cfg2, None));
 
     let cfg3 = cfg.clone();
-    let active2 = active.clone();
     listener.add_active_window_changed_handler(move |data| {
-        if data.as_ref().is_some_and(|d| titles.contains(&d.title)) {
-            active2.store(true, Ordering::Relaxed);
-        } else if active2.swap(false, Ordering::Relaxed) {
+        let dominated = data
+            .as_ref()
+            .is_some_and(|d| patterns.iter().any(|re| re.is_match(&d.title)));
+        set_focus_mode(dominated);
+        if !dominated {
             hide_all(&cfg3, None);
         }
     });
