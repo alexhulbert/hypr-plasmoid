@@ -50,8 +50,8 @@ fn load_config() -> Config {
         .expect("invalid json")
 }
 
-fn title_rule(title: &str) -> String {
-    format!("title:^({title})$")
+fn rule_prop(name: &str, prop: &str) -> String {
+    format!("windowrule[{name}]:{prop}")
 }
 
 fn find_matching_title(title_pattern: &str) -> Option<String> {
@@ -75,7 +75,7 @@ fn set_focus_mode(show: bool) {
     }
 }
 
-fn set_window_rules(p: &Plasmoid) {
+fn set_window_rules(name: &str, p: &Plasmoid) {
     let Ok(cursor) = CursorPosition::get() else {
         return;
     };
@@ -94,14 +94,12 @@ fn set_window_rules(p: &Plasmoid) {
     );
     let y = (cursor.y - PADDING).max(mon.y as i64 + mon.reserved.1 as i64 + PADDING);
 
-    let rule = title_rule(&p.title);
-    Keyword::set("windowrule", format!("float,{rule}")).ok();
-    Keyword::set(
-        "windowrule",
-        format!("size {} {},{rule}", p.width, p.height),
-    )
-    .ok();
-    Keyword::set("windowrule", format!("move {x} {y},{rule}")).ok();
+    let rule_name = format!("hypr-plasmoid-{name}");
+    Keyword::set(&rule_prop(&rule_name, "match:title"), format!("^({})$", p.title)).ok();
+    Keyword::set(&rule_prop(&rule_name, "float"), "yes").ok();
+    Keyword::set(&rule_prop(&rule_name, "size"), format!("{} {}", p.width, p.height)).ok();
+    Keyword::set(&rule_prop(&rule_name, "move"), format!("{x} {y}")).ok();
+    Keyword::set(&rule_prop(&rule_name, "enable"), "1").ok();
 }
 
 fn spawn_plasmoid(p: &Plasmoid) {
@@ -185,7 +183,7 @@ async fn show(conn: &Connection, cfg: &Config, name: &str) -> zbus::Result<()> {
 
     set_focus_mode(true);
     hide_all(cfg, Some(name));
-    set_window_rules(p);
+    set_window_rules(name, p);
 
     if let Some((dest, path)) = find_sni(conn, &p.plasmoid).await {
         SniProxy::builder(conn)
@@ -227,14 +225,15 @@ fn config_cmd(cfg: &Config, name: &str) {
 }
 
 async fn warm_up(cfg: &Config) {
-    for p in cfg.values() {
-        let rule = title_rule(&p.title);
-        Keyword::set("windowrule", format!("move -10000 -10000,{rule}")).ok();
+    for (name, p) in cfg {
+        let rule_name = format!("hypr-plasmoid-warmup-{name}");
+        Keyword::set(&rule_prop(&rule_name, "match:title"), format!("^({})$", p.title)).ok();
+        Keyword::set(&rule_prop(&rule_name, "move"), "-10000 -10000").ok();
         spawn_plasmoid(p);
         if let Some(title) = wait_for_window(&p.title, 2000).await {
             Dispatch::call(DispatchType::CloseWindow(WindowIdentifier::Title(&title))).ok();
         }
-        Keyword::set("windowrule", format!("unset,{rule}")).ok();
+        Keyword::set(&rule_prop(&rule_name, "enable"), "0").ok();
     }
 }
 
