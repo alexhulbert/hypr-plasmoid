@@ -225,16 +225,13 @@ fn config_cmd(cfg: &Config, name: &str) {
 }
 
 async fn warm_up(cfg: &Config) {
-    for (name, p) in cfg {
-        let rule_name = format!("hypr-plasmoid-warmup-{name}");
-        Keyword::set(&rule_prop(&rule_name, "match:title"), format!("^({})$", p.title)).ok();
-        Keyword::set(&rule_prop(&rule_name, "move"), "-10000 -10000").ok();
+    for (_name, p) in cfg {
         spawn_plasmoid(p);
         if let Some(title) = wait_for_window(&p.title, 2000).await {
             Dispatch::call(DispatchType::CloseWindow(WindowIdentifier::Title(&title))).ok();
         }
-        Keyword::set(&rule_prop(&rule_name, "enable"), "0").ok();
     }
+    Keyword::set(&rule_prop("plasmoid-warmup", "enable"), "0").ok();
 }
 
 async fn daemon(cfg: Arc<Config>) {
